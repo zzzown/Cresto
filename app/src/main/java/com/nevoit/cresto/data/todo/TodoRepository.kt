@@ -2,11 +2,13 @@ package com.nevoit.cresto.data.todo
 
 import androidx.room.withTransaction
 import com.nevoit.cresto.data.statistics.DailyStat
+import com.nevoit.cresto.data.todo.backup.BACKUP_SCHEMA_VERSION
 import com.nevoit.cresto.data.todo.backup.RepeatRuleBackupDto
 import com.nevoit.cresto.data.todo.backup.SubTodoBackupDto
 import com.nevoit.cresto.data.todo.backup.TodoBackupDto
 import com.nevoit.cresto.data.todo.backup.TodoBackupFile
 import com.nevoit.cresto.data.todo.backup.TodoGroupBackupDto
+import com.nevoit.cresto.data.todo.backup.checkBackupSchemaVersion
 import com.nevoit.cresto.data.todo.calendar.CalendarSyncResult
 import com.nevoit.cresto.data.todo.calendar.CalendarSyncStatus
 import com.nevoit.cresto.data.todo.calendar.CalendarSyncSummary
@@ -29,7 +31,9 @@ enum class DuplicatePolicy {
 data class ImportResult(
     val total: Int,
     val imported: Int,
-    val skipped: Int
+    val skipped: Int,
+    /** True when the backup carried a settings section and it was applied. */
+    val settingsRestored: Boolean = false
 )
 
 data class RepeatCompletionResult(
@@ -841,6 +845,19 @@ class TodoRepository(
         ignoreUnknownKeys = true
     }
 
+    /**
+     * Parses a backup file, rejecting anything written by a newer build.
+     *
+     * Unknown fields are tolerated (so this build still reads older schemas), but a higher
+     * schema version means the file may rely on semantics we do not implement, so importing it
+     * would silently lose or corrupt data.
+     */
+    private fun decodeBackupFile(json: String): TodoBackupFile {
+        val backup = backupJson.decodeFromString<TodoBackupFile>(json)
+        checkBackupSchemaVersion(backup.schemaVersion)
+        return backup
+    }
+
     suspend fun exportToJson(): String {
         val todos = todoDao.getAllTodosSnapshot()
         val subTodos = todoDao.getAllSubTodosSnapshot()
@@ -848,7 +865,7 @@ class TodoRepository(
         val groups = todoDao.getAllTodoGroupsSnapshot()
 
         val backup = TodoBackupFile(
-            schemaVersion = 6,
+            schemaVersion = BACKUP_SCHEMA_VERSION,
             exportedAt = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
             todos = todos.map {
                 TodoBackupDto(
@@ -908,17 +925,25 @@ class TodoRepository(
                     color = it.color,
                     sortOrder = it.sortOrder
                 )
-            }
+            },
+            settings = SettingsManager.toBackupDto(
+                includeApiKey = SettingsManager.isIncludeApiKeyInBackup
+            )
         )
-
         return backupJson.encodeToString(backup)
     }
 
     suspend fun importFromJson(
         json: String,
-        policy: DuplicatePolicy
+        policy: DuplicatePolicy,
+        restoreSettings: Boolean = true
     ): ImportResult {
-        val backup = backupJson.decodeFromString<TodoBackupFile>(json)
+        val backup = decodeBackupFile(json)
+        val settings = backup.settings
+        val settingsRestored = restoreSettings && settings != null
+        if (restoreSettings && settings != null) {
+            SettingsManager.applyBackupDto(settings)
+        }
 
         val subTodosByParent = backup.subTodos.groupBy { it.parentId }
         val repeatRuleIdMap = backup.repeatRules.associate { it.id to UUID.randomUUID().toString() }
@@ -1012,7 +1037,8 @@ class TodoRepository(
         return ImportResult(
             total = backup.todos.size,
             imported = imported,
-            skipped = skipped
+            skipped = skipped,
+            settingsRestored = settingsRestored
         )
     }
 
@@ -1091,7 +1117,7 @@ class TodoRepository(
     )
 
     suspend fun previewImportDuplicates(json: String): ImportPreviewResult {
-        val backup = backupJson.decodeFromString<TodoBackupFile>(json)
+        val backup = decodeBackupFile(json)
         val subTodosByParent = backup.subTodos.groupBy { it.parentId }
 
         val existing = todoDao.getAllTodosWithSubTodosSnapshot()

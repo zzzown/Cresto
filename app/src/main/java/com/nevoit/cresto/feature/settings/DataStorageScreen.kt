@@ -53,6 +53,9 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.shapes.Capsule
 import com.nevoit.cresto.R
+import com.nevoit.cresto.data.backup.AppDataArchive
+import com.nevoit.cresto.data.todo.backup.BACKUP_SCHEMA_VERSION
+import com.nevoit.cresto.feature.settings.util.SettingsManager
 import com.nevoit.cresto.data.todo.DuplicatePolicy
 import com.nevoit.cresto.data.todo.TodoViewModel
 import com.nevoit.cresto.theme.AppButtonColors
@@ -80,6 +83,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.androidx.compose.koinViewModel
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -265,6 +269,17 @@ fun DataStorageScreen() {
     val precheckFailedText = stringResource(R.string.backup_precheck_failed)
     val importCompletedText = stringResource(R.string.backup_import_completed)
     val importResultMessage = stringResource(R.string.backup_import_result_message)
+    val unsupportedBackupVersionText = stringResource(R.string.backup_unsupported_version)
+    val apiKeyMissingHintText = stringResource(R.string.backup_api_key_missing_hint)
+    val restoreSettingsOnImportText = stringResource(R.string.restore_settings_on_import)
+    val restoreSettingsOnImportHintText = stringResource(R.string.restore_settings_on_import_hint)
+    val includeApiKeyInBackupText = stringResource(R.string.include_api_key_in_backup)
+    val includeApiKeyWarningText = stringResource(R.string.include_api_key_warning)
+    val exportAppDataText = stringResource(R.string.export_app_data)
+    val appDataExportFailedText = stringResource(R.string.app_data_export_failed)
+    var restoreSettingsOnImport by SettingsManager.isRestoreSettingsOnImportState
+    var includeApiKeyInBackup by SettingsManager.isIncludeApiKeyInBackupState
+    var pendingExportZip by remember { mutableStateOf<ByteArray?>(null) }
     val confirmActionTitle = stringResource(R.string.confirm_action_title)
 
     val createBackupFileLauncher = rememberLauncherForActivityResult(
@@ -292,6 +307,32 @@ fun DataStorageScreen() {
         }
         pendingExportJson = null
         viewModel.clearExportedJson()
+    }
+
+    val createZipLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val bytes = pendingExportZip
+        if (uri != null && bytes != null) {
+            runCatching<Unit> {
+                context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(bytes)
+                } ?: error(openOutputStreamFailedText)
+            }.onFailure { e ->
+                showDialog(
+                    items = listOf(
+                        DialogItemData(
+                            cancelText,
+                            onClick = { dismissDialog() },
+                            isPrimary = true
+                        )
+                    ),
+                    title = appDataExportFailedText,
+                    message = e.message
+                )
+            }
+        }
+        pendingExportZip = null
     }
 
     LaunchedEffect(backupUiState.exportedJson) {
@@ -380,6 +421,22 @@ fun DataStorageScreen() {
     }
 
 
+    LaunchedEffect(importPreviewState.unsupportedBackupVersion) {
+        val found = importPreviewState.unsupportedBackupVersion ?: return@LaunchedEffect
+        showDialog(
+            items = listOf(
+                DialogItemData(okText, onClick = { dismissDialog() }, isPrimary = true)
+            ),
+            title = precheckFailedText,
+            message = String.format(
+                unsupportedBackupVersionText,
+                found,
+                BACKUP_SCHEMA_VERSION
+            )
+        )
+        viewModel.clearImportPreview()
+    }
+
     LaunchedEffect(importPreviewState.errorMessage) {
         importPreviewState.errorMessage?.let { msg ->
             showDialog(
@@ -393,19 +450,38 @@ fun DataStorageScreen() {
         }
     }
 
+    LaunchedEffect(backupUiState.unsupportedBackupVersion) {
+        val found = backupUiState.unsupportedBackupVersion ?: return@LaunchedEffect
+        showDialog(
+            items = listOf(
+                DialogItemData(okText, onClick = { dismissDialog() }, isPrimary = true)
+            ),
+            title = precheckFailedText,
+            message = String.format(
+                unsupportedBackupVersionText,
+                found,
+                BACKUP_SCHEMA_VERSION
+            )
+        )
+        viewModel.clearBackupError()
+    }
+
     LaunchedEffect(backupUiState.importResult) {
         backupUiState.importResult?.let { result ->
+            val summary = String.format(
+                importResultMessage,
+                result.total,
+                result.imported,
+                result.skipped
+            )
+            // Backups never carry the API key, so tell the user where to put it back.
+            val needsApiKey = result.settingsRestored && SettingsManager.aiApiKey.isBlank()
             showDialog(
                 items = listOf(
                     DialogItemData(okText, onClick = { dismissDialog() }, isPrimary = true)
                 ),
                 title = importCompletedText,
-                message = String.format(
-                    importResultMessage,
-                    result.total,
-                    result.imported,
-                    result.skipped
-                )
+                message = if (needsApiKey) "$summary\n\n$apiKeyMissingHintText" else summary
             )
             pendingImportJson = null
             viewModel.clearImportResult()
@@ -487,6 +563,96 @@ fun DataStorageScreen() {
             }
 
             Section {
+                Row(
+                    onClick = {
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val buffer = ByteArrayOutputStream()
+                                    AppDataArchive.write(context, buffer)
+                                    buffer.toByteArray()
+                                }
+                            }
+                            result.onSuccess { data ->
+                                if (data.isEmpty()) {
+                                    showDialog(
+                                        items = listOf(
+                                            DialogItemData(
+                                                okText,
+                                                onClick = { dismissDialog() },
+                                                isPrimary = true
+                                            )
+                                        ),
+                                        title = appDataExportFailedText,
+                                        message = readBackupFileFailedText
+                                    )
+                                    return@launch
+                                }
+                                pendingExportZip = data
+                                val ts = LocalDateTime.now()
+                                    .format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                                createZipLauncher.launch("cresto_data_$ts.zip")
+                            }.onFailure { e ->
+                                showDialog(
+                                    items = listOf(
+                                        DialogItemData(
+                                            okText,
+                                            onClick = { dismissDialog() },
+                                            isPrimary = true
+                                        )
+                                    ),
+                                    title = appDataExportFailedText,
+                                    message = e.message
+                                )
+                            }
+                        }
+                    }
+                ) {
+                    Text(
+                        text = exportAppDataText,
+                        style = GlasenseTheme.type.body
+                    )
+                }
+                CustomSwitchRow(
+                    checked = includeApiKeyInBackup,
+                    onCheckedChange = { enabled ->
+                        SettingsManager.isIncludeApiKeyInBackup = enabled
+                        if (enabled) {
+                            showDialog(
+                                items = listOf(
+                                    DialogItemData(
+                                        okText,
+                                        onClick = { dismissDialog() },
+                                        isPrimary = true
+                                    )
+                                ),
+                                title = includeApiKeyInBackupText,
+                                message = includeApiKeyWarningText
+                            )
+                        }
+                    }
+                ) {
+                    Text(
+                        text = includeApiKeyInBackupText,
+                        style = GlasenseTheme.type.body
+                    )
+                }
+                CustomSwitchRow(
+                    checked = restoreSettingsOnImport,
+                    onCheckedChange = { SettingsManager.isRestoreSettingsOnImport = it }
+                ) {
+                    Column {
+                        Text(
+                            text = restoreSettingsOnImportText,
+                            style = GlasenseTheme.type.body
+                        )
+                        Text(
+                            text = restoreSettingsOnImportHintText,
+                            style = GlasenseTheme.type.footnote,
+                            color = GlasenseTheme.colors.contentVariant
+                        )
+                    }
+                }
                 Row(
                     onClick = {
                         viewModel.exportBackupToJson()

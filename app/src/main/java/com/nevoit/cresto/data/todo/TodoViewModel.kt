@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nevoit.cresto.data.statistics.DailyStat
 import com.nevoit.cresto.data.statistics.TodoStat
+import com.nevoit.cresto.data.todo.backup.UnsupportedBackupVersionException
+import com.nevoit.cresto.feature.settings.util.SettingsManager
 import com.nevoit.cresto.data.todo.calendar.CalendarSyncSummary
 import com.nevoit.cresto.data.todo.reminder.TodoAlarmScheduler
 import com.nevoit.cresto.data.utils.EventItem
@@ -40,13 +42,17 @@ data class BackupUiState(
     val isImporting: Boolean = false,
     val exportedJson: String? = null,
     val importResult: ImportResult? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** Schema version of a rejected too-new backup, surfaced so the UI can localize the message. */
+    val unsupportedBackupVersion: Int? = null
 )
 
 data class ImportPreviewUiState(
     val isChecking: Boolean = false,
     val result: TodoRepository.ImportPreviewResult? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** Schema version of a rejected too-new backup, surfaced so the UI can localize the message. */
+    val unsupportedBackupVersion: Int? = null
 )
 
 data class InsightsUiState(
@@ -621,7 +627,11 @@ class TodoViewModel(
         }
 
         runCatching {
-            repository.importFromJson(json, policy).also {
+            repository.importFromJson(
+                json = json,
+                policy = policy,
+                restoreSettings = SettingsManager.isRestoreSettingsOnImport
+            ).also {
                 repository.getReminderTodosSnapshot().forEach(alarmScheduler::schedule)
             }
         }.onSuccess { result ->
@@ -633,16 +643,22 @@ class TodoViewModel(
             }
         }.onFailure { e ->
             _backupUiState.update {
-                it.copy(
-                    isImporting = false,
-                    errorMessage = e.message ?: "failed to import."
-                )
+                if (e is UnsupportedBackupVersionException) {
+                    it.copy(isImporting = false, unsupportedBackupVersion = e.foundVersion)
+                } else {
+                    it.copy(
+                        isImporting = false,
+                        errorMessage = e.message ?: "failed to import."
+                    )
+                }
             }
         }
     }
 
     fun clearBackupError() {
-        _backupUiState.update { it.copy(errorMessage = null) }
+        _backupUiState.update {
+            it.copy(errorMessage = null, unsupportedBackupVersion = null)
+        }
     }
 
     fun clearExportedJson() {
@@ -671,7 +687,11 @@ class TodoViewModel(
             }
             .onFailure { e ->
                 _importPreviewState.update {
-                    it.copy(isChecking = false, errorMessage = e.message ?: "预检失败")
+                    if (e is UnsupportedBackupVersionException) {
+                        it.copy(isChecking = false, unsupportedBackupVersion = e.foundVersion)
+                    } else {
+                        it.copy(isChecking = false, errorMessage = e.message ?: "预检失败")
+                    }
                 }
             }
     }

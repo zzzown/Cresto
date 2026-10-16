@@ -284,6 +284,14 @@
     <string name="backup_precheck_failed">Precheck Failed</string>
     <string name="backup_import_completed">Import Completed</string>
     <string name="backup_import_result_message">Total %1$d items, imported %2$d, skipped %3$d.</string>
+    <string name="backup_unsupported_version">This backup uses schema version %1$d, but this app only supports up to version %2$d. Update Cresto, then import again.</string>
+    <string name="backup_api_key_missing_hint">Your AI settings were restored, but backups never contain the API key for security reasons. Re-enter it in Settings &gt; AI.</string>
+    <string name="restore_settings_on_import">Restore app settings on import</string>
+    <string name="restore_settings_on_import_hint">Includes theme, sorting, markers and AI configuration</string>
+    <string name="include_api_key_in_backup">Include API key in backup</string>
+    <string name="include_api_key_warning">The backup file will contain your API key in plain text. Only enable this if you know where the file is stored, and never share it.</string>
+    <string name="export_app_data">Export Data Folder (zip)</string>
+    <string name="app_data_export_failed">Data Folder Export Failed</string>
     <string name="confirm_action_title">%1$s?</string>
     <string name="sort">Sort</string>
     <string name="select_due_date">Select Due Date</string>

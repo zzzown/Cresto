@@ -3,6 +3,7 @@ package com.nevoit.cresto.feature.settings.util
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.toArgb
+import com.nevoit.cresto.data.todo.backup.SettingsBackupDto
 import com.nevoit.glasense.theme.tokens.Blue500
 import com.tencent.mmkv.MMKV
 
@@ -43,6 +44,8 @@ object SettingsManager {
     private const val DEFAULT_AI_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
     private const val DEFAULT_AI_MODEL = "glm-4-flash"
     private const val KEY_APP_ICON = "app_icon"
+    private const val KEY_RESTORE_SETTINGS_ON_IMPORT = "restore_settings_on_import"
+    private const val KEY_INCLUDE_API_KEY_IN_BACKUP = "include_api_key_in_backup"
 
     private val defaultThemePrimaryColor = Blue500.toArgb()
 
@@ -90,6 +93,10 @@ object SettingsManager {
         mutableStateOf(mmkv.decodeBool(KEY_AUTO_ADD_TO_SYSTEM_CALENDAR, false))
     val isCheckUpdatesOnStartupState =
         mutableStateOf(mmkv.decodeBool(KEY_CHECK_UPDATES_ON_STARTUP, true))
+    val isRestoreSettingsOnImportState =
+        mutableStateOf(mmkv.decodeBool(KEY_RESTORE_SETTINGS_ON_IMPORT, true))
+    val isIncludeApiKeyInBackupState =
+        mutableStateOf(mmkv.decodeBool(KEY_INCLUDE_API_KEY_IN_BACKUP, false))
     val appIconState = mutableStateOf(
         mmkv.decodeString(KEY_APP_ICON, AppIconManager.AppIcon.DEFAULT.name)
             ?.let { name ->
@@ -299,6 +306,75 @@ object SettingsManager {
             mmkv.encode(KEY_APP_ICON, value.name)
             appIconState.value = value
         }
+
+    var isIncludeApiKeyInBackup: Boolean
+        get() = mmkv.decodeBool(KEY_INCLUDE_API_KEY_IN_BACKUP, false)
+        set(value) {
+            mmkv.encode(KEY_INCLUDE_API_KEY_IN_BACKUP, value)
+            isIncludeApiKeyInBackupState.value = value
+        }
+
+    var isRestoreSettingsOnImport: Boolean
+        get() = mmkv.decodeBool(KEY_RESTORE_SETTINGS_ON_IMPORT, true)
+        set(value) {
+            mmkv.encode(KEY_RESTORE_SETTINGS_ON_IMPORT, value)
+            isRestoreSettingsOnImportState.value = value
+        }
+
+    /**
+     * Snapshots the preferences that are safe to carry in a backup file.
+     *
+     * @param includeApiKey Opt-in escape hatch: when true the AI key is written too, which
+     *                      makes the file a credential. Off by default.
+     */
+    fun toBackupDto(includeApiKey: Boolean = false): SettingsBackupDto = SettingsBackupDto(
+        colorMode = colorMode,
+        themePrimaryColor = themePrimaryColor,
+        isCustomPrimaryColorEnabled = isCustomPrimaryColorEnabled,
+        isUseDynamicColor = isUseDynamicColor,
+        isLiteMode = isLiteMode,
+        isLiquidGlass = isLiquidGlass,
+        sortOption = sortOption.ordinal,
+        sortOrder = sortOrder.ordinal,
+        isDueTodayMarker = isDueTodayMarker,
+        isOverdueMarker = isOverdueMarker,
+        isCompletionSoundEnabled = isCompletionSoundEnabled,
+        aiApiUrl = aiApiUrl,
+        aiTextModel = aiTextModel,
+        aiMultimodalModel = aiMultimodalModel,
+        aiApiKey = if (includeApiKey) aiApiKey else null,
+        aiResponseTimeoutSeconds = aiResponseTimeoutSeconds,
+        isExtractScreenQuickTileEnabled = isExtractScreenQuickTileEnabled,
+        isAutoAddToSystemCalendar = isAutoAddToSystemCalendar,
+        isCheckUpdatesOnStartup = isCheckUpdatesOnStartup
+    )
+
+    /**
+     * Applies a backup snapshot. Values go through the normal setters, so existing clamping
+     * (for example the response timeout range) applies to restored data too.
+     */
+    fun applyBackupDto(dto: SettingsBackupDto) {
+        colorMode = dto.colorMode
+        dto.themePrimaryColor?.let { themePrimaryColor = it }
+        isCustomPrimaryColorEnabled = dto.isCustomPrimaryColorEnabled
+        isUseDynamicColor = dto.isUseDynamicColor
+        isLiteMode = dto.isLiteMode
+        isLiquidGlass = dto.isLiquidGlass
+        sortOption = SortOption.entries.getOrElse(dto.sortOption) { SortOption.DEFAULT }
+        sortOrder = SortOrder.entries.getOrElse(dto.sortOrder) { SortOrder.DESCENDING }
+        isDueTodayMarker = dto.isDueTodayMarker
+        isOverdueMarker = dto.isOverdueMarker
+        isCompletionSoundEnabled = dto.isCompletionSoundEnabled
+        aiApiUrl = dto.aiApiUrl
+        // A key is only restored when the exporting build actually wrote one.
+        dto.aiApiKey?.let { aiApiKey = it }
+        if (dto.aiTextModel.isNotBlank()) aiTextModel = dto.aiTextModel
+        if (dto.aiMultimodalModel.isNotBlank()) aiMultimodalModel = dto.aiMultimodalModel
+        aiResponseTimeoutSeconds = dto.aiResponseTimeoutSeconds
+        isExtractScreenQuickTileEnabled = dto.isExtractScreenQuickTileEnabled
+        isAutoAddToSystemCalendar = dto.isAutoAddToSystemCalendar
+        isCheckUpdatesOnStartup = dto.isCheckUpdatesOnStartup
+    }
 
     fun resetAiSettingsToDefaults() {
         aiApiUrl = DEFAULT_AI_API_URL
